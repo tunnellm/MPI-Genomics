@@ -7,8 +7,8 @@
 #include <iterator>
 #include <numeric>
 
-#include "constants.hpp"
-#include "functions.hpp"
+#include "../constants.hpp"
+#include "../functions.hpp"
 
 #include <mpi.h>
 
@@ -40,8 +40,10 @@ auto main (int argc, char ** argv) -> int {
         exit(0);
     }
     
-    /** Initialize the arrays */
+    /** Initialize the array */
     static std::vector <double> dataVec(NUM_ROWS * NUM_COLS);
+    static std::vector <double> fullDataVec(NUM_ROWS * NUM_COLS);
+    static std::vector <double> receiveVec(size_data + NUM_COLS);
     static std::vector <double> intermediaryVec(size_data + NUM_COLS);
     static std::vector <double> allStudentT(NUM_ROWS, 0);
     static std::vector <double> allD;
@@ -55,7 +57,6 @@ auto main (int argc, char ** argv) -> int {
         
     }
     
-    /** We start timing now that all of the data is loaded. */
     double start = MPI_Wtime();
     
     /** We calculate how much data to send to each node. While there is leftover
@@ -78,33 +79,41 @@ auto main (int argc, char ** argv) -> int {
     
     /** This for loop mimics the functionality of std::exclusive_scan--mpic++ does not 
     *    appear to support it. The compiler just says that it is not part of the std 
-    *    library despite having the correct imports.
+    *    library despite having the correct imports.		
     */
     for (int i = 1; i < dataInputSize.size(); ++ i)
         dataOffset.at(i) = (sum = sum + dataInputSize.at(i - 1));
     
-    /** Broadcast all of the data to all nodes. We'll perform half of the work in parallel,
-    *    then scatter it to the other nodes.
+    /** https://www.mpich.org/static/docs/v3.1/www3/MPI_Scatterv.html */
+    
+    /** MPI_Scatterv is similar to MPI_Scatter, except that it takes a list of data sizes 
+    *    and corresponding offsets. These offsets amount to an exclusive scan of the data
+    *    sizes under the assumption that the data are in a contiguous array.
     */
-    MPI_Bcast(&dataVec[0], dataVec.size(), MPI_DOUBLE, ROOT, MPI_COMM_WORLD);    
+    
+    MPI_Scatterv(&dataVec[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, &receiveVec[0], size_data + NUM_COLS, MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
+    
     
     /** We calculate the studentT scores in parallel, then allgather to pass to other 
-    *    nodes. We have access to the entire array in this version, so we pass the 
-    *    starting values that we care about. There are minor changes throughout the rest
-    *    of this file when compared with the original all_gather, but this is the only
-    *    substantial one.
+    *    nodes.
     */    
-    intermediaryVec = studentT(&dataVec[dataOffset.at(process_rank)], dataInputSize.at(process_rank));
+    intermediaryVec = studentT(&receiveVec[0], dataInputSize.at(process_rank));
+    
+    /** First we pass the rest of the data that was in dataVec to all nodes. It would have 
+    *    been more efficient to broadcast this data first and simply use the offsets in the
+    *    function parameters, but we're testing allgather instead.
+    */
+    MPI_Allgatherv(&receiveVec[0], dataInputSize.at(process_rank), MPI_DOUBLE, &fullDataVec[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, MPI_COMM_WORLD);
     
     
     /** We decrease the size of the inputs and offsets to match the output data size,
     *    it's all relative.
     */
-    for (int i = 0; i < dataInputSize.size(); ++ i) {
-        dataInputSize.at(i) /= NUM_COLS;
-        dataOffset.at(i) /= NUM_COLS;
-    }
-
+    for (auto & it : dataInputSize)
+        it /= NUM_COLS;
+    
+    for (auto & it : dataOffset)
+        it /= NUM_COLS;
     
     /** https://www.mpich.org/static/docs/v3.1/www3/MPI_Gatherv.html */
     
@@ -121,7 +130,7 @@ auto main (int argc, char ** argv) -> int {
     MPI_Allgatherv(&intermediaryVec[0], dataInputSize.at(process_rank), MPI_DOUBLE, &allStudentT[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, MPI_COMM_WORLD);
     
     /** Calculate the D - Score, repeat 1/total_nodes times, then we take the average. */
-    allD = calculateTheD(&dataVec[0], &allStudentT[0], NUM_ROWS, num_repeats / total_nodes);
+    allD = calculateTheD(&fullDataVec[0], &allStudentT[0], NUM_ROWS, num_repeats / total_nodes);
     
     /** We reduce and bring the D scores together now. It is considered done once this 
     *    returns.

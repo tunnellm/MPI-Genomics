@@ -16,7 +16,7 @@
 #include <algorithm>
 #include <tuple>
 
-#include "constants.hpp"
+#include "../constants.hpp"
 
 auto doStuff(const double * dataVec, const int & vectorSize, const int & repeats) -> std::vector<double> & {
     

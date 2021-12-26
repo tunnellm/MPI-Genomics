@@ -7,8 +7,8 @@
 #include <iterator>
 #include <numeric>
 
-#include "constants.hpp"
-#include "functions.hpp"
+#include "../constants.hpp"
+#include "../functions.hpp"
 
 #include <mpi.h>
 
@@ -42,11 +42,8 @@ auto main (int argc, char ** argv) -> int {
     
     /** Initialize the array */
     static std::vector <double> dataVec(NUM_ROWS * NUM_COLS);
-    static std::vector <double> fullDataVec(NUM_ROWS * NUM_COLS);
     static std::vector <double> receiveVec(size_data + NUM_COLS);
     static std::vector <double> intermediaryVec(size_data + NUM_COLS);
-    static std::vector <double> allStudentT(NUM_ROWS, 0);
-    static std::vector <double> allD;
     static std::vector <double> outputVec(NUM_ROWS, 0);
     
     if (process_rank == ROOT) {
@@ -79,7 +76,7 @@ auto main (int argc, char ** argv) -> int {
     
     /** This for loop mimics the functionality of std::exclusive_scan--mpic++ does not 
     *    appear to support it. The compiler just says that it is not part of the std 
-    *    library despite having the correct imports.		
+    *    library despite having the correct imports.
     */
     for (int i = 1; i < dataInputSize.size(); ++ i)
         dataOffset.at(i) = (sum = sum + dataInputSize.at(i - 1));
@@ -93,22 +90,12 @@ auto main (int argc, char ** argv) -> int {
     
     MPI_Scatterv(&dataVec[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, &receiveVec[0], size_data + NUM_COLS, MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
     
-    
-    /** We calculate the studentT scores in parallel, then allgather to pass to other 
-    *    nodes.
-    */    
-    intermediaryVec = studentT(&receiveVec[0], dataInputSize.at(process_rank));
-    
-    /** First we pass the rest of the data that was in dataVec to all nodes. It would have 
-    *    been more efficient to broadcast this data first and simply use the offsets in the
-    *    function parameters, but we're testing allgather instead.
-    */
-    MPI_Allgatherv(&receiveVec[0], dataInputSize.at(process_rank), MPI_DOUBLE, &fullDataVec[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, MPI_COMM_WORLD);
+    /** Do stuff to the data and receive the D score. */
+    intermediaryVec = doStuff(&receiveVec[0], dataInputSize.at(process_rank), num_repeats);
     
     
-    /** We decrease the size of the inputs and offsets to match the output data size,
-    *    it's all relative.
-    */
+    /** Change the vectors to */
+    
     for (auto & it : dataInputSize)
         it /= NUM_COLS;
     
@@ -122,29 +109,15 @@ auto main (int argc, char ** argv) -> int {
     *    will differ from the ones sent with Scatterv should the data sizes change at all.
     **    
     *    For some reason, I was not able to use the same receiving array as the sending array.
-    *    I'm not sure if this is intended behavior, but it would not work properly otherwise.
+    *    I'm not sure if this is intended behavior, but it did not work properly otherwise.
     */
-    
-    
-    /** Now we pass the StudentT scores around to all of the nodes. */
-    MPI_Allgatherv(&intermediaryVec[0], dataInputSize.at(process_rank), MPI_DOUBLE, &allStudentT[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, MPI_COMM_WORLD);
-    
-    /** Calculate the D - Score, repeat 1/total_nodes times, then we take the average. */
-    allD = calculateTheD(&fullDataVec[0], &allStudentT[0], NUM_ROWS, num_repeats / total_nodes);
-    
-    /** We reduce and bring the D scores together now. It is considered done once this 
-    *    returns.
-    */    
-    MPI_Reduce(&allD[0], &outputVec[0], allD.size(), MPI_DOUBLE, MPI_SUM, ROOT, MPI_COMM_WORLD);
+
+    MPI_Gatherv(&intermediaryVec[0], dataInputSize.at(process_rank), MPI_DOUBLE, &outputVec[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
     
     double end = MPI_Wtime();
     
-    
-    if (process_rank == ROOT) {
-        // for (auto & it : outputVec)
-            // std::cout << it / total_nodes << std::endl;
+    if (process_rank == ROOT)
         std::cout << end - start << std::endl;
-    }
     
     /** Lets clean up here. */
     MPI_Finalize();

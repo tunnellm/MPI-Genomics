@@ -3,8 +3,8 @@
 #include <string>
 #include <chrono>
 
-#include "constants.hpp"
-#include "functions.hpp"
+#include "../constants.hpp"
+#include "../functions.hpp"
 
 #include <mpi.h>
 

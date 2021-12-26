@@ -7,8 +7,8 @@
 #include <iterator>
 #include <numeric>
 
-#include "constants.hpp"
-#include "functions.hpp"
+#include "../constants.hpp"
+#include "../functions.hpp"
 
 #include <mpi.h>
 
@@ -40,10 +40,11 @@ auto main (int argc, char ** argv) -> int {
         exit(0);
     }
     
-    /** Initialize the array */
+    /** Initialize the arrays */
     static std::vector <double> dataVec(NUM_ROWS * NUM_COLS);
-    static std::vector <double> receiveVec(size_data + NUM_COLS);
     static std::vector <double> intermediaryVec(size_data + NUM_COLS);
+    static std::vector <double> allStudentT(NUM_ROWS, 0);
+    static std::vector <double> allD;
     static std::vector <double> outputVec(NUM_ROWS, 0);
     
     if (process_rank == ROOT) {
@@ -54,6 +55,7 @@ auto main (int argc, char ** argv) -> int {
         
     }
     
+    /** We start timing now that all of the data is loaded. */
     double start = MPI_Wtime();
     
     /** We calculate how much data to send to each node. While there is leftover
@@ -81,26 +83,28 @@ auto main (int argc, char ** argv) -> int {
     for (int i = 1; i < dataInputSize.size(); ++ i)
         dataOffset.at(i) = (sum = sum + dataInputSize.at(i - 1));
     
-    /** https://www.mpich.org/static/docs/v3.1/www3/MPI_Scatterv.html */
-    
-    /** MPI_Scatterv is similar to MPI_Scatter, except that it takes a list of data sizes 
-    *    and corresponding offsets. These offsets amount to an exclusive scan of the data
-    *    sizes under the assumption that the data are in a contiguous array.
+    /** Broadcast all of the data to all nodes. We'll perform half of the work in parallel,
+    *    then scatter it to the other nodes.
     */
+    MPI_Bcast(&dataVec[0], dataVec.size(), MPI_DOUBLE, ROOT, MPI_COMM_WORLD);    
     
-    MPI_Scatterv(&dataVec[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, &receiveVec[0], size_data + NUM_COLS, MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
+    /** We calculate the studentT scores in parallel, then allgather to pass to other 
+    *    nodes. We have access to the entire array in this version, so we pass the 
+    *    starting values that we care about. There are minor changes throughout the rest
+    *    of this file when compared with the original all_gather, but this is the only
+    *    substantial one.
+    */    
+    intermediaryVec = studentT(&dataVec[dataOffset.at(process_rank)], dataInputSize.at(process_rank));
     
-    /** Do stuff to the data and receive the D score. */
-    intermediaryVec = doStuff(&receiveVec[0], dataInputSize.at(process_rank), num_repeats);
     
-    
-    /** Change the vectors to */
-    
-    for (auto & it : dataInputSize)
-        it /= NUM_COLS;
-    
-    for (auto & it : dataOffset)
-        it /= NUM_COLS;
+    /** We decrease the size of the inputs and offsets to match the output data size,
+    *    it's all relative.
+    */
+    for (int i = 0; i < dataInputSize.size(); ++ i) {
+        dataInputSize.at(i) /= NUM_COLS;
+        dataOffset.at(i) /= NUM_COLS;
+    }
+
     
     /** https://www.mpich.org/static/docs/v3.1/www3/MPI_Gatherv.html */
     
@@ -109,15 +113,29 @@ auto main (int argc, char ** argv) -> int {
     *    will differ from the ones sent with Scatterv should the data sizes change at all.
     **    
     *    For some reason, I was not able to use the same receiving array as the sending array.
-    *    I'm not sure if this is intended behavior, but it did not work properly otherwise.
+    *    I'm not sure if this is intended behavior, but it would not work properly otherwise.
     */
-
-    MPI_Gatherv(&intermediaryVec[0], dataInputSize.at(process_rank), MPI_DOUBLE, &outputVec[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, ROOT, MPI_COMM_WORLD);
+    
+    
+    /** Now we pass the StudentT scores around to all of the nodes. */
+    MPI_Allgatherv(&intermediaryVec[0], dataInputSize.at(process_rank), MPI_DOUBLE, &allStudentT[0], &dataInputSize[0], &dataOffset[0], MPI_DOUBLE, MPI_COMM_WORLD);
+    
+    /** Calculate the D - Score, repeat 1/total_nodes times, then we take the average. */
+    allD = calculateTheD(&dataVec[0], &allStudentT[0], NUM_ROWS, num_repeats / total_nodes);
+    
+    /** We reduce and bring the D scores together now. It is considered done once this 
+    *    returns.
+    */    
+    MPI_Reduce(&allD[0], &outputVec[0], allD.size(), MPI_DOUBLE, MPI_SUM, ROOT, MPI_COMM_WORLD);
     
     double end = MPI_Wtime();
     
-    if (process_rank == ROOT)
+    
+    if (process_rank == ROOT) {
+        // for (auto & it : outputVec)
+            // std::cout << it / total_nodes << std::endl;
         std::cout << end - start << std::endl;
+    }
     
     /** Lets clean up here. */
     MPI_Finalize();

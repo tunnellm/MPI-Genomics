@@ -8,7 +8,7 @@
 #include <random>
 #include <chrono>
 
-#include "functions.hpp"
+#include "../functions.hpp"
 
 
 auto main (int argc, char ** argv) -> int {
