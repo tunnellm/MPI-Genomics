@@ -79,8 +79,7 @@ auto main (int argc, char ** argv) -> int {
     
     /** This for loop mimics the functionality of std::exclusive_scan--mpic++ does not 
     *    appear to support it. The compiler just says that it is not part of the std 
-    *    library despite having the correct imports. This may be due to the fact that 
-    *    new implementations would appear to be multithreaded, but I'm not sure.
+    *    library despite having the correct imports.		
     */
     for (int i = 1; i < dataInputSize.size(); ++ i)
         dataOffset.at(i) = (sum = sum + dataInputSize.at(i - 1));
